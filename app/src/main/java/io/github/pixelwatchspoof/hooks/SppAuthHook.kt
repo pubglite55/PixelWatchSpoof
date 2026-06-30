@@ -47,8 +47,8 @@ object SppAuthHook {
 
                     module.log(Log.INFO, TAG, "Found mCallback: ${target.javaClass.name}")
                     val model = DeviceConfig.XiaomiWatch5.MODEL
-                    val did = "pixel_watch_035t"
-                    val mac = "D4:3A:2C:72:5B:85"
+                    val did = DeviceConfig.PIXEL_WATCH_DID
+                    val mac = DeviceConfig.PIXEL_WATCH_MAC
                     val onSuccessMethod = target.javaClass.methods.firstOrNull {
                         it.name == "onBindSuccess" && it.parameterTypes.size == 4
                     }
@@ -230,7 +230,7 @@ object SppAuthHook {
                     }
                 } catch (_: Throwable) {}
 
-                val did = "pixel_watch_035t"
+                val did = DeviceConfig.PIXEL_WATCH_DID
                 findField(binder, "mDid")?.set(binder, did)
                 findField(binder, "isBindSuccess")?.setBoolean(binder, true)
 

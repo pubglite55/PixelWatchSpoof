@@ -2,13 +2,13 @@ package io.github.pixelwatchspoof.hooks
 
 import android.util.Log
 import io.github.libxposed.api.XposedModule
+import io.github.pixelwatchspoof.config.DeviceConfig
 
 object BondHook {
 
     private const val TAG = "BondHook"
     private const val BOND_BONDED = 12
     private const val SOCKET_CONNECT_SUCCESS = 1000
-    private const val PIXEL_WATCH_SUFFIX = "5B:85"
 
     fun hook(module: XposedModule, classLoader: ClassLoader) {
         hookGetBondState(module, classLoader)
@@ -25,7 +25,7 @@ object BondHook {
             module.hook(getBondStateMethod).intercept { chain ->
                 val device = chain.thisObject
                 val address = device?.javaClass?.getDeclaredMethod("getAddress")?.invoke(device) as? String
-                if (address != null && address.contains(PIXEL_WATCH_SUFFIX, ignoreCase = true)) {
+                if (address != null && address.contains(DeviceConfig.PIXEL_WATCH_MAC_SUFFIX, ignoreCase = true)) {
                     module.log(Log.INFO, TAG, "getBondState() returning BOND_BONDED for $address")
                     return@intercept BOND_BONDED
                 }
@@ -44,7 +44,7 @@ object BondHook {
             module.hook(createBondMethod).intercept { chain ->
                 val device = chain.thisObject
                 val address = device?.javaClass?.getDeclaredMethod("getAddress")?.invoke(device) as? String
-                if (address != null && address.contains(PIXEL_WATCH_SUFFIX, ignoreCase = true)) {
+                if (address != null && address.contains(DeviceConfig.PIXEL_WATCH_MAC_SUFFIX, ignoreCase = true)) {
                     module.log(Log.INFO, TAG, "createBond() faking success for $address")
                     return@intercept true
                 }

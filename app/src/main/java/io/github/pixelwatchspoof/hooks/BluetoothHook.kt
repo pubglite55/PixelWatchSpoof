@@ -3,6 +3,7 @@ package io.github.pixelwatchspoof.hooks
 import android.util.Log
 import io.github.libxposed.api.XposedModule
 import io.github.pixelwatchspoof.config.DeviceConfig
+import io.github.pixelwatchspoof.config.DeviceConfig
 
 object BluetoothHook {
 
@@ -78,7 +79,7 @@ object BluetoothHook {
     }
 
     private fun isPixelWatchAddress(address: String): Boolean {
-        return address.contains("5B:85", ignoreCase = true)
+        return address.contains(DeviceConfig.PIXEL_WATCH_MAC_SUFFIX, ignoreCase = true)
     }
 
     private fun hookXiaomiBluetooth(module: XposedModule, classLoader: ClassLoader) {

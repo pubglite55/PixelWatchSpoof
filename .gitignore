@@ -23,3 +23,8 @@ local.properties
 *.keystore
 *.jks
 google-services.json
+
+# Analysis directories (large, not needed for build)
+/analysis
+/xiaomi_analysis
+/*.apk

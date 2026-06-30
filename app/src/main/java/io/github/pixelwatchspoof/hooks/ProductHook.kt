@@ -46,7 +46,7 @@ object ProductHook {
                 module.hook(bMethod).intercept { chain ->
                     val bleDevice = chain.args[1]
                     val address = getBleDeviceAddress(bleDevice, classLoader)
-                    if (address != null && address.contains("5B:85", ignoreCase = true)) {
+                    if (address != null && address.contains(DeviceConfig.PIXEL_WATCH_MAC_SUFFIX, ignoreCase = true)) {
                         module.log(Log.INFO, TAG, "ScanManager.b bypass for Pixel Watch")
                         invokeOnFound(chain.args[0], bleDevice, classLoader, module)
                         return@intercept null

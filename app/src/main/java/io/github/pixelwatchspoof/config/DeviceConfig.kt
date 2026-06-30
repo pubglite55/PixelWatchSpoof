@@ -6,6 +6,16 @@ object DeviceConfig {
 
     const val TARGET_PACKAGE = "com.mi.health"
 
+    // Your Pixel Watch's MAC address suffix (last 2 bytes)
+    // Find it via: Settings > About Phone > Bluetooth Address
+    const val PIXEL_WATCH_MAC_SUFFIX = "5B:85"
+
+    // Unique device ID for this Pixel Watch (arbitrary string)
+    const val PIXEL_WATCH_DID = "pixel_watch_035t"
+
+    // Full MAC address of your Pixel Watch
+    const val PIXEL_WATCH_MAC = "D4:3A:2C:72:5B:85"
+
     object XiaomiWatch5 {
         const val MODEL = "midr.watch.m62s"
         const val PRODUCT_NAME = "Xiaomi Watch 5"

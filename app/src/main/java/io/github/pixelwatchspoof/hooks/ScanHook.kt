@@ -47,7 +47,7 @@ object ScanHook {
                 val name = extractName(scanResult)
                 val rssi = extractRssi(scanResult)
 
-                if (address == null || !address.contains("5B:85")) {
+                if (address == null || !address.contains(DeviceConfig.PIXEL_WATCH_MAC_SUFFIX)) {
                     return@intercept null
                 }
 
