@@ -86,7 +86,7 @@ const val PIXEL_WATCH_MAC_SUFFIX = "5B:85"
 const val PIXEL_WATCH_DID = "pixel_watch_035t"
 
 // 你的 Pixel Watch 完整 MAC 地址
-const val PIXEL_WATCH_MAC = "D4:3A:2C:72:5B:85"
+const val PIXEL_WATCH_MAC = "XX:XX:XX:XX:5B:85"
 ```
 
 ### 技术架构
@@ -201,6 +201,65 @@ BLE 扫描发现设备 ← ScanHook 拦截
 **症状**：绑定界面显示"Xiaomi Watch S2 46mm"而非预期的"小米手表 5"。
 
 **原因**：BLE 扫描结果中的产品信息匹配可能不正确。
+
+### 常见问题 (FAQ)
+
+#### Q: 模块安装后没有效果？
+
+**A:**
+1. 确认 LSPosed 管理器中已启用 PixelWatchSpoof 模块
+2. 确认作用域已设置为 `com.mi.health`、`com.xiaomi.mi_connect_service`、`com.android.bluetooth`
+3. 强制停止小米运动健康 App 后重新打开
+4. 检查 LSPosed 日志是否有模块加载错误
+
+#### Q: 找不到我的 Pixel Watch MAC 地址？
+
+**A:** 在 Pixel Watch 上：
+- 设置 → 关于手表 → 蓝牙地址
+- 或在手机蓝牙设置中查看已配对设备的 MAC 地址
+
+#### Q: 绑定成功但设备不在列表中？
+
+**A:** 这是已知问题。服务器端注册未完成，设备绑定只存在于内存中。每次打开 App 需要重新绑定。
+
+#### Q: 支持哪些 Pixel Watch 型号？
+
+**A:** 目前仅测试了 Pixel Watch 1 (2022)。Pixel Watch 2/3 理论上也可以，但需要验证 BLE 广播格式是否兼容。
+
+#### Q: 支持哪些 Android 版本？
+
+**A:** Android 8.0+ (API 26+)。需要 LSPosed/Xposed 框架和 Root 权限。
+
+#### Q: 如何完全重置模块？
+
+**A:**
+```bash
+# 清除 App 数据
+adb shell pm clear com.mi.health
+
+# 卸载模块
+adb uninstall io.github.pixelwatchspoof
+
+# 重新安装并配置
+```
+
+#### Q: 绑定时提示"设备不存在"或"绑定失败"？
+
+**A:**
+1. 检查 LSPosed 日志，查看 `SppAuthHook` 是否正常拦截
+2. 确认 `DeviceConfig.kt` 中的 MAC 地址和 DID 配置正确
+3. 尝试清除 App 数据后重试
+
+#### Q: 如何查看详细的调试日志？
+
+**A:**
+```bash
+# 实时查看所有 PixelWatchSpoof 日志
+adb logcat | grep -i "pixelwatchspoof\|SppAuthHook\|BondHook\|ScanHook\|ProductHook"
+
+# 保存日志到文件
+adb logcat -d | grep -i "pixelwatchspoof" > /tmp/pixelwatchspoof.log
+```
 
 ### 调试方法
 
@@ -391,7 +450,7 @@ const val PIXEL_WATCH_MAC_SUFFIX = "5B:85"
 const val PIXEL_WATCH_DID = "pixel_watch_035t"
 
 // Full MAC address of your Pixel Watch
-const val PIXEL_WATCH_MAC = "D4:3A:2C:72:5B:85"
+const val PIXEL_WATCH_MAC = "XX:XX:XX:XX:5B:85"
 ```
 
 ### Architecture
@@ -444,6 +503,65 @@ adb shell monkey -p com.mi.health -c android.intent.category.LAUNCHER 1
 1. **Activity stuck after binding** — ViewModel's `did` is null because device not registered on Xiaomi server
 2. **Binding not persistent** — Server-side registration (`applyBind` → `confirmBind`) not completed
 3. **Wrong device name** — Shows "Xiaomi Watch S2 46mm" instead of "Xiaomi Watch 5"
+
+### FAQ
+
+#### Q: Module installed but no effect?
+
+**A:**
+1. Verify PixelWatchSpoof is enabled in LSPosed Manager
+2. Check scope includes `com.mi.health`, `com.xiaomi.mi_connect_service`, `com.android.bluetooth`
+3. Force stop Mi Health app and reopen
+4. Check LSPosed logs for module loading errors
+
+#### Q: Can't find my Pixel Watch MAC address?
+
+**A:** On your Pixel Watch:
+- Settings > About Watch > Bluetooth Address
+- Or check paired devices in phone's Bluetooth settings
+
+#### Q: Binding succeeds but device not in list?
+
+**A:** Known issue. Server-side registration not completed. Device binding only exists in memory. Re-bind each time you open the app.
+
+#### Q: Which Pixel Watch models are supported?
+
+**A:** Currently only tested with Pixel Watch 1 (2022). Pixel Watch 2/3 may work but BLE broadcast format compatibility needs verification.
+
+#### Q: Which Android versions are supported?
+
+**A:** Android 8.0+ (API 26+). Requires LSPosed/Xposed framework and Root access.
+
+#### Q: How to fully reset the module?
+
+**A:**
+```bash
+# Clear app data
+adb shell pm clear com.mi.health
+
+# Uninstall module
+adb uninstall io.github.pixelwatchspoof
+
+# Reinstall and configure
+```
+
+#### Q: Getting "device not found" or "binding failed" error?
+
+**A:**
+1. Check LSPosed logs for SppAuthHook interception
+2. Verify MAC address and DID configuration in `DeviceConfig.kt`
+3. Try clearing app data and retrying
+
+#### Q: How to view detailed debug logs?
+
+**A:**
+```bash
+# Real-time PixelWatchSpoof logs
+adb logcat | grep -i "pixelwatchspoof\|SppAuthHook\|BondHook\|ScanHook\|ProductHook"
+
+# Save logs to file
+adb logcat -d | grep -i "pixelwatchspoof" > /tmp/pixelwatchspoof.log
+```
 
 ### Build Environment
 

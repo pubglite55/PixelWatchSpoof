@@ -87,7 +87,7 @@ module.hook(method).intercept { chain ->
     val onSuccessMethod = target.javaClass.methods.firstOrNull {
         it.name == "onBindSuccess" && it.parameterTypes.size == 4
     }
-    onSuccessMethod?.invoke(target, "midr.watch.m62s", "pixel_watch_035t", "D4:3A:2C:72:5B:85", null)
+    onSuccessMethod?.invoke(target, "midr.watch.m62s", "pixel_watch_035t", "XX:XX:XX:XX:5B:85", null)
     return@intercept null
 }
 ```
