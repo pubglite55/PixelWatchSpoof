@@ -10,9 +10,9 @@ object SppAuthHook {
 
     fun hook(module: XposedModule, classLoader: ClassLoader) {
         hookGetBindInfo(module, classLoader)
-        hookRedirectFailureToSuccess(module, classLoader)
-        hookRequestDevice(module, classLoader)
-        hookServerBind(module, classLoader)
+        hookBindSuccess(module, classLoader)
+        hookConnectDevice(module, classLoader)
+        hookBindFailure(module, classLoader)
     }
 
     private fun findField(obj: Any, fieldName: String): java.lang.reflect.Field? {
@@ -55,23 +55,7 @@ object SppAuthHook {
                     if (onSuccessMethod != null) {
                         module.log(Log.INFO, TAG, "Calling onBindSuccess on binder")
                         onSuccessMethod.invoke(target, model, did, mac, null)
-                        module.log(Log.INFO, TAG, "onBindSuccess delivered! Restarting app in 2s...")
-                        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                            try {
-                                Runtime.getRuntime().exec(arrayOf("am", "force-stop", "com.mi.health"))
-                                module.log(Log.INFO, TAG, "App force-stopped")
-                                android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                                    try {
-                                        Runtime.getRuntime().exec(arrayOf("am", "start", "-n", "com.mi.health/com.xiaomi.fitness.login.SplashActivity"))
-                                        module.log(Log.INFO, TAG, "App relaunched")
-                                    } catch (e: Throwable) {
-                                        module.log(Log.WARN, TAG, "Relaunch failed: ${e.message}")
-                                    }
-                                }, 1500)
-                            } catch (e: Throwable) {
-                                module.log(Log.WARN, TAG, "Failed: ${e.message}")
-                            }
-                        }, 2000)
+                        module.log(Log.INFO, TAG, "onBindSuccess delivered!")
                     } else {
                         module.log(Log.WARN, TAG, "onBindSuccess not found")
                     }
@@ -84,139 +68,202 @@ object SppAuthHook {
         }
     }
 
-    private fun hookRequestDevice(module: XposedModule, classLoader: ClassLoader) {
+    private fun hookBindSuccess(module: XposedModule, classLoader: ClassLoader) {
         try {
             val clazz = Class.forName("com.xiaomi.fit.device.bind.BaseDeviceBinder", false, classLoader)
-            val method = clazz.getDeclaredMethod("requestDevice", String::class.java)
+            val method = clazz.getDeclaredMethod("onBindSuccess",
+                String::class.java, String::class.java, String::class.java, String::class.java)
             module.hook(method).intercept { chain ->
                 val binder = chain.thisObject
-                module.log(Log.INFO, TAG, "requestDevice intercepted")
-                val did = findField(binder, "mDid")?.get(binder) as? String ?: "pixel_watch_035t"
-                val isRebind = findField(binder, "isRebind")?.getBoolean(binder) ?: false
+                val model = chain.args[0] as String
+                val did = chain.args[1] as String
+                val mac = (chain.args[2] as String).uppercase(java.util.Locale.ROOT)
+                val sn = chain.args[3] as? String
+
+                module.log(Log.INFO, TAG, "onBindSuccess intercepted: model=$model, did=$did, mac=$mac")
+
+                // Set internal state
+                findField(binder, "mDid")?.set(binder, did)
+                findField(binder, "sn")?.set(binder, sn)
+                findField(binder, "isBindSuccess")?.setBoolean(binder, true)
+
+                // Remove device binder from factory
                 try {
-                    val getMgrMethod = binder.javaClass.methods.firstOrNull {
-                        it.name == "getMDeviceManager" && it.parameterTypes.isEmpty()
+                    val factoryClass = Class.forName("com.xiaomi.fit.device.DeviceFactory", false, classLoader)
+                    val instance = factoryClass.getField("INSTANCE").get(null)
+                    val removeMethod = instance.javaClass.methods.firstOrNull {
+                        it.name == "removeDeviceBinder" && it.parameterTypes.size == 1
                     }
-                    val mgr = getMgrMethod?.invoke(binder)
-                    if (mgr != null) {
-                        val notifyMethod = mgr.javaClass.methods.firstOrNull {
-                            it.name == "notifyDeviceBind" && it.parameterTypes.size == 2
+                    removeMethod?.invoke(instance, mac)
+                    module.log(Log.INFO, TAG, "Removed device binder for $mac")
+                } catch (e: Throwable) {
+                    module.log(Log.WARN, TAG, "removeDeviceBinder failed: ${e.message}")
+                }
+
+                // Report bind success
+                try {
+                    val reportMethod = binder.javaClass.methods.firstOrNull {
+                        it.name == "reportBindSuccess" && it.parameterTypes.isEmpty()
+                    }
+                    reportMethod?.invoke(binder)
+                    module.log(Log.INFO, TAG, "reportBindSuccess called")
+                } catch (e: Throwable) {
+                    module.log(Log.WARN, TAG, "reportBindSuccess failed: ${e.message}")
+                }
+
+                // Set preferences
+                try {
+                    val prefClass = Class.forName("com.xiaomi.fitness.device.manager.DevicePreference", false, classLoader)
+                    val prefInstance = prefClass.getField("INSTANCE").get(null)
+                    val setMethod = prefInstance.javaClass.methods.firstOrNull {
+                        it.name == "setIN_BIND_NEW_MODE" && it.parameterTypes.size == 1
+                    }
+                    setMethod?.invoke(prefInstance, false)
+                } catch (_: Throwable) {}
+
+                // Remove did from account
+                try {
+                    val accountClass = Class.forName("com.xiaomi.fitness.account.extensions.AccountManagerExtKt", false, classLoader)
+                    val userInfoClass = Class.forName("com.xiaomi.fitness.account.user.UserInfoManager", false, classLoader)
+                    val userInfoInstance = userInfoClass.getField("INSTANCE").get(null)
+                    val getInstanceMethod = accountClass.methods.firstOrNull {
+                        it.name == "getInstance" && it.parameterTypes.size == 1
+                    }
+                    val accountManager = getInstanceMethod?.invoke(null, userInfoInstance)
+                    if (accountManager != null) {
+                        val removeDidMethod = accountManager.javaClass.methods.firstOrNull {
+                            it.name == "removeDid" && it.parameterTypes.size == 1
                         }
-                        notifyMethod?.invoke(mgr, did, isRebind)
-                        module.log(Log.INFO, TAG, "notifyDeviceBind($did) called")
+                        removeDidMethod?.invoke(accountManager, did)
+                    }
+                } catch (_: Throwable) {}
+
+                // Call callback.onBindSuccess(did) to notify UI
+                try {
+                    val callbackField = findField(binder, "callback")
+                    val callback = callbackField?.get(binder)
+                    if (callback != null) {
+                        val cbMethod = callback.javaClass.methods.firstOrNull {
+                            it.name == "onBindSuccess" && it.parameterTypes.size == 1
+                        }
+                        cbMethod?.invoke(callback, did)
+                        module.log(Log.INFO, TAG, "callback.onBindSuccess($did) called")
                     }
                 } catch (e: Throwable) {
-                    module.log(Log.WARN, TAG, "notifyDeviceBind failed: ${e.message}")
+                    module.log(Log.WARN, TAG, "callback.onBindSuccess failed: ${e.message}")
                 }
-                module.log(Log.INFO, TAG, "Skipped onRequestDeviceSuccess to avoid GATT connection attempt")
+
+                // Call callback.onRequestDeviceSuccess() to trigger device list refresh
+                try {
+                    val callbackField = findField(binder, "callback")
+                    val callback = callbackField?.get(binder)
+                    if (callback != null) {
+                        val cbMethod = callback.javaClass.methods.firstOrNull {
+                            it.name == "onRequestDeviceSuccess" && it.parameterTypes.isEmpty()
+                        }
+                        cbMethod?.invoke(callback)
+                        module.log(Log.INFO, TAG, "callback.onRequestDeviceSuccess() called")
+                    }
+                } catch (e: Throwable) {
+                    module.log(Log.WARN, TAG, "callback.onRequestDeviceSuccess failed: ${e.message}")
+                }
+
+                module.log(Log.INFO, TAG, "onBindSuccess fully handled - skipping server calls")
+
+                // Schedule closing the stuck bind activity via am
+                android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                    try {
+                        Runtime.getRuntime().exec(arrayOf("am", "start", "-n", "com.mi.health/.main.MainActivity", "--activity-clear-top"))
+                        module.log(Log.INFO, TAG, "Launched MainActivity to close bind activity")
+                    } catch (e: Throwable) {
+                        module.log(Log.WARN, TAG, "Failed to launch MainActivity: ${e.message}")
+                    }
+                }, 3000)
+
                 return@intercept null
             }
-            module.log(Log.INFO, TAG, "Hooked BaseDeviceBinder.requestDevice()")
+            module.log(Log.INFO, TAG, "Hooked BaseDeviceBinder.onBindSuccess()")
         } catch (e: Throwable) {
-            module.log(Log.WARN, TAG, "requestDevice hook failed: ${e.message}")
+            module.log(Log.WARN, TAG, "onBindSuccess hook failed: ${e.message}")
         }
     }
 
-    private fun hookServerBind(module: XposedModule, classLoader: ClassLoader) {
-        // Hook BindToServer.bindWithSign to fake server registration success
+    private fun hookConnectDevice(module: XposedModule, classLoader: ClassLoader) {
         try {
-            val clazz = Class.forName("com.xiaomi.fit.device.bind.BindToServer", false, classLoader)
-            for (method in clazz.declaredMethods) {
-                if (method.name == "bindWithSign") {
-                    module.hook(method).intercept { chain ->
-                        module.log(Log.INFO, TAG, "bindWithSign intercepted - faking server success")
-                        val args = chain.args
-                        if (args.size >= 2) {
-                            val onSuccess = args[1]
-                            if (onSuccess != null) {
-                                try {
-                                    val invokeMethod = onSuccess.javaClass.methods.firstOrNull {
-                                        it.name == "invoke" && it.parameterTypes.size == 1
-                                    }
-                                    if (invokeMethod != null) {
-                                        invokeMethod.invoke(onSuccess, true)
-                                        module.log(Log.INFO, TAG, "bindWithSign success callback invoked!")
-                                    }
-                                } catch (e: Throwable) {
-                                    module.log(Log.WARN, TAG, "Failed to invoke success: ${e.message}")
-                                }
-                            }
-                        }
-                        return@intercept null
-                    }
-                    module.log(Log.INFO, TAG, "Hooked BindToServer.bindWithSign()")
-                }
-            }
-        } catch (e: Throwable) {
-            module.log(Log.WARN, TAG, "BindToServer hook failed: ${e.message}")
-        }
-
-        // Also hook the AIDL unauthCall to fake success for bind-related calls
-        try {
-            val clazz = Class.forName("com.xiaomi.wearable.core.client.IMiWearCoreClient", false, classLoader)
+            val clazz = Class.forName("com.xiaomi.fitness.device.manager.remote.DeviceManagerRemoteImpl", false, classLoader)
             val method = clazz.declaredMethods.firstOrNull {
-                it.name == "unauthCall" && it.parameterTypes.size >= 3
+                it.name == "connectDevice" && it.parameterTypes.size >= 2
             }
             if (method != null) {
                 module.hook(method).intercept { chain ->
-                    val callback = chain.args.lastOrNull { it.javaClass.name.contains("ICallback") || it.javaClass.interfaces?.any { i -> i.name.contains("ICallback") } == true }
-                    if (callback != null) {
-                        module.log(Log.INFO, TAG, "unauthCall intercepted, faking WearApiResult success")
-                        try {
-                            val wearApiResultClass = Class.forName("com.xiaomi.wearable.core.WearApiResult", false, classLoader)
-                            val constructor = wearApiResultClass.declaredConstructors.firstOrNull {
-                                it.parameterTypes.size == 2 && it.parameterTypes[0] == Int::class.javaPrimitiveType
-                            }
-                            if (constructor != null) {
-                                val result = constructor.newInstance(0, ByteArray(0)) // code=0 means success
-                                val callbackMethod = callback.javaClass.methods.firstOrNull {
-                                    it.name == "onCallback" && it.parameterTypes.size == 1
-                                }
-                                if (callbackMethod != null) {
-                                    callbackMethod.invoke(callback, result)
-                                    module.log(Log.INFO, TAG, "unauthCall success callback invoked!")
-                                }
-                            }
-                        } catch (e: Throwable) {
-                            module.log(Log.WARN, TAG, "unauthCall fake failed: ${e.message}")
-                        }
-                    }
-                    chain.proceed()
+                    module.log(Log.INFO, TAG, "connectDevice intercepted - skipping GATT connection")
+                    return@intercept null
                 }
-                module.log(Log.INFO, TAG, "Hooked unauthCall()")
+                module.log(Log.INFO, TAG, "Hooked DeviceManagerRemoteImpl.connectDevice()")
             }
         } catch (e: Throwable) {
-            module.log(Log.WARN, TAG, "unauthCall hook failed: ${e.message}")
+            module.log(Log.WARN, TAG, "connectDevice hook failed: ${e.message}")
         }
     }
 
-    private fun hookRedirectFailureToSuccess(module: XposedModule, classLoader: ClassLoader) {
+    private fun hookBindFailure(module: XposedModule, classLoader: ClassLoader) {
         try {
             val clazz = Class.forName("com.xiaomi.fit.device.bind.BluetoothDeviceBinder", false, classLoader)
             val method = clazz.getDeclaredMethod("onBindFailure", Int::class.java, String::class.java)
             module.hook(method).intercept { chain ->
                 val binder = chain.thisObject
-                module.log(Log.INFO, TAG, "onBindFailure(${chain.args[0]}, ${chain.args[1]}) -> success")
-                val diField = findField(binder, "mDeviceInfo")
-                val deviceInfo = diField?.get(binder)
-                if (deviceInfo != null) {
-                    val macAddr = deviceInfo.javaClass.getMethod("getMac").invoke(deviceInfo) as? String
-                    if (macAddr != null) {
-                        try {
+                val code = chain.args[0] as Int
+                val message = chain.args[1] as? String
+                module.log(Log.INFO, TAG, "onBindFailure($code, $message) -> redirecting to success")
+
+                // Close unauth connection
+                try {
+                    val diField = findField(binder, "mDeviceInfo")
+                    val deviceInfo = diField?.get(binder)
+                    if (deviceInfo != null) {
+                        val macAddr = deviceInfo.javaClass.getMethod("getMac").invoke(deviceInfo) as? String
+                        if (macAddr != null) {
                             val wc = Class.forName("com.xiaomi.wearable.core.client.IMiWearCoreClient", false, classLoader)
                             val inst = wc.getField("Companion").get(null).javaClass.getMethod("getInstance").invoke(wc.getField("Companion").get(null))
                             inst.javaClass.getMethod("closeUnauthConnection", String::class.java).invoke(inst, macAddr)
-                        } catch (_: Throwable) {}
+                        }
                     }
-                }
+                } catch (_: Throwable) {}
+
                 val did = "pixel_watch_035t"
                 findField(binder, "mDid")?.set(binder, did)
                 findField(binder, "isBindSuccess")?.setBoolean(binder, true)
-                val cb = findField(binder, "callback")?.get(binder)
-                cb?.javaClass?.methods?.firstOrNull {
-                    it.name == "onBindSuccess" && it.parameterTypes.size == 1
-                }?.invoke(cb, did)
-                module.log(Log.INFO, TAG, "callback.onBindSuccess($did) called")
+
+                // Call callback.onBindSuccess(did)
+                try {
+                    val cbField = findField(binder, "callback")
+                    val cb = cbField?.get(binder)
+                    if (cb != null) {
+                        val m = cb.javaClass.methods.firstOrNull {
+                            it.name == "onBindSuccess" && it.parameterTypes.size == 1
+                        }
+                        m?.invoke(cb, did)
+                        module.log(Log.INFO, TAG, "callback.onBindSuccess($did) called")
+                    }
+                } catch (e: Throwable) {
+                    module.log(Log.WARN, TAG, "callback.onBindSuccess failed: ${e.message}")
+                }
+
+                // Call callback.onRequestDeviceSuccess()
+                try {
+                    val cbField = findField(binder, "callback")
+                    val cb = cbField?.get(binder)
+                    if (cb != null) {
+                        val m = cb.javaClass.methods.firstOrNull {
+                            it.name == "onRequestDeviceSuccess" && it.parameterTypes.isEmpty()
+                        }
+                        m?.invoke(cb)
+                        module.log(Log.INFO, TAG, "callback.onRequestDeviceSuccess() called")
+                    }
+                } catch (e: Throwable) {
+                    module.log(Log.WARN, TAG, "callback.onRequestDeviceSuccess failed: ${e.message}")
+                }
+
                 return@intercept null
             }
             module.log(Log.INFO, TAG, "Hooked BluetoothDeviceBinder.onBindFailure()")
@@ -224,4 +271,10 @@ object SppAuthHook {
             module.log(Log.WARN, TAG, "onBindFailure hook failed: ${e.message}")
         }
     }
+
+    /**
+     * Hook BindBleDeviceDeviceActivity to finish itself after bind success.
+     * The activity is stuck at "正在连接设备..." because the ViewModel's did is null.
+     * We detect when onBindSuccess is called and finish the activity after a delay.
+     */
 }
