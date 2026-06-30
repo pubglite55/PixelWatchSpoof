@@ -1,0 +1,5 @@
+plugins {
+    id("com.android.application") version "8.7.0" apply false
+    id("org.jetbrains.kotlin.android") version "2.2.10" apply false
+    id("org.lsposed.lsplugin.resopt") version "1.6" apply false
+}
