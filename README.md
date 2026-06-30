@@ -26,10 +26,9 @@
 | BT 配对伪造 | ✅ 完成 | `getBondState()` 返回已配对 |
 | SPP 连接伪造 | ✅ 完成 | `y8.m.o()` 拦截成功 |
 | `getBindInfo` 拦截 | ✅ 完成 | 直接调用 `onBindSuccess` |
-| `notifyDeviceBind` | ✅ 完成 | 设备注册到本地管理器 |
+| `onBindSuccess` 处理 | ✅ 完成 | 设置内部状态、回调通知 |
+| `connectDevice` 拦截 | ✅ 完成 | 跳过 GATT 连接尝试 |
 | `onBindFailure` 重定向 | ✅ 完成 | 失败回调转为成功 |
-| 服务器端设备注册 | ⏳ 进行中 | 需要伪造 `requestDeviceList` 响应 |
-| 设备模型创建 | ⏳ 进行中 | 需要 hook `getDeviceModelByMac` |
 | Activity 转换 | ⏳ 进行中 | 绑定完成后自动跳转主页 |
 
 ## 系统要求
@@ -43,7 +42,7 @@
 
 ### 方法一：直接安装 APK
 
-1. 从 [Releases](https://github.com/your-username/PixelWatchSpoof/releases) 下载最新 APK
+1. 从 [Releases](https://github.com/pubglite55/PixelWatchSpoof/releases) 下载最新 APK
 2. 安装 APK
 3. 打开 LSPosed 管理器
 4. 启用 PixelWatchSpoof 模块
@@ -55,7 +54,7 @@
 
 ```bash
 # 克隆仓库
-git clone https://github.com/your-username/PixelWatchSpoof.git
+git clone https://github.com/pubglite55/PixelWatchSpoof.git
 cd PixelWatchSpoof
 
 # 设置 JAVA_HOME
@@ -91,6 +90,8 @@ PixelWatchSpoof/
 │       ├── DataInjectHook.kt   # BLE 数据注入
 │       ├── TransportHook.kt    # 传输层 hook
 │       └── WearOsHook.kt       # Wear OS 相关 hook
+├── docs/
+│   └── BIND_FLOW.md            # 绑定流程技术文档
 ├── scope.list                  # LSPosed 作用域列表
 └── build.gradle.kts            # 构建配置
 ```
@@ -123,78 +124,61 @@ BLE 扫描发现设备 ← ScanHook 拦截
     ↓
 发送 getBindInfo 请求 ← SppAuthHook 拦截
     ↓
-服务器返回认证数据 ← 直接调用 onBindSuccess
+直接调用 onBindSuccess ← 跳过服务器调用
+    ↓
+设置内部状态 + 通知 UI
+    ↓
+跳过 GATT 连接 ← connectDevice 拦截
     ↓
 完成绑定
 ```
 
-**`WearBinderV2.i()` 拦截：**
+### 3. 绑定成功处理 (`hookBindSuccess`)
 
-```kotlin
-// WearBinderV2 的 getBindInfo 方法
-// 正常流程：发送 IPC 请求 → 等待服务器响应 → 处理认证数据
-// 伪造流程：直接调用 mCallback.onBindSuccess()，跳过所有 IPC 调用
+拦截 `BaseDeviceBinder.onBindSuccess()` 方法，执行以下操作：
 
-val cbField = findField(binder, "mCallback")  // 获取 BaseDeviceBinder 的 callback 字段
-val target = cbField.get(binder)               // 获取 DualCoreDeviceBinder 实例
-val onSuccessMethod = target.javaClass.methods.firstOrNull {
-    it.name == "onBindSuccess" && it.parameterTypes.size == 4
-}
-onSuccessMethod?.invoke(target, model, did, mac, null)
-```
+1. **设置内部状态**：`mDid`、`sn`、`isBindSuccess`
+2. **移除设备绑定器**：从 `DeviceFactory` 中移除
+3. **报告绑定成功**：调用 `reportBindSuccess()`
+4. **设置偏好**：关闭新绑定模式
+5. **移除设备 ID**：从账户中移除
+6. **通知 UI**：调用 `callback.onBindSuccess(did)`
+7. **刷新设备列表**：调用 `callback.onRequestDeviceSuccess()`
+8. **关闭绑定页面**：延迟 3 秒后启动主界面
 
-**关键发现：**
-- `WearBinderV2` 继承自 `a`（抽象基类），不是 `BaseDeviceBinder`
-- `mCallback` 字段在 `a` 类中，类型为 `fs2`（即 `BaseDeviceBinder`）
-- `onBindSuccess` 方法在 `BaseDeviceBinder` 上，需要通过 `mCallback` 获取正确的实例
+### 4. GATT 连接拦截 (`hookConnectDevice`)
 
-### 3. BT 配对伪造 (`BondHook.kt`)
+拦截 `DeviceManagerRemoteImpl.connectDevice()` 方法，跳过 BLE GATT 连接尝试。因为 Pixel Watch 1 不支持小米的 GATT 服务，连接会失败。
 
-hook 了 Android 蓝牙框架的多个方法：
+### 5. 绑定失败重定向 (`hookBindFailure`)
 
-- `BluetoothDevice.getBondState()` → 返回 `BOND_BONDED (12)`
-- `BluetoothDevice.createBond()` → 返回 `true`
-- `BluetoothSocket.connect()` → 跳过实际连接
-- `y8.m.o()` → 伪造 SPP 版本握手（version 2.0）
-
-### 4. 服务器端绑定 (`requestDevice` hook)
-
-`BaseDeviceBinder.onBindSuccess()` 内部调用 `requestDevice(mac)`，这会：
-1. 向小米服务器请求设备列表
-2. 调用 `notifyDeviceBind()` 注册设备
-3. 触发 `connectDevice()` 尝试 BLE GATT 连接
-
-**当前处理：**
-- 拦截 `requestDevice` 跳过服务器调用
-- 直接调用 `notifyDeviceBind(did, false)` 注册设备
-- 跳过 `onRequestDeviceSuccess` 避免触发 GATT 连接
+拦截 `BluetoothDeviceBinder.onBindFailure()` 方法，将绑定失败重定向为成功：
+- 关闭未认证连接
+- 设置绑定成功状态
+- 调用 `callback.onBindSuccess(did)`
+- 调用 `callback.onRequestDeviceSuccess()`
 
 ## 已知问题
 
 ### 1. 绑定后 Activity 卡住
 
-**症状：** 绑定完成后，Activity 停留在"正在连接设备..."界面。
+**症状**：绑定完成后，Activity 停留在"正在连接设备..."界面。
 
-**原因：** `requestDeviceList` 服务器返回空设备列表（设备未在小米服务器注册），导致：
-- `getDeviceModelByMac(mac)` 返回 null
-- `switchDevice()` 被跳过
-- Activity 等待 GATT 连接（永远无法完成）
+**原因**：`requestDeviceList` 返回空列表（设备未在小米服务器注册），导致 ViewModel 的 `did` 为 null。
 
-**解决方案（待实现）：**
-- Hook `getDeviceModelByMac()` 返回伪造的设备模型
-- 或 Hook `requestDeviceList` 回调注入设备数据
+**当前解决**：在绑定成功后延迟 3 秒启动主界面，覆盖绑定页面。
 
-### 2. 重启后绑定丢失
+### 2. 设备绑定不持久化
 
-**症状：** 强制停止 App 后重新打开，设备不在已绑定列表中。
+**症状**：强制停止 App 后重新打开，设备不在已绑定列表中。
 
-**原因：** 服务器端注册（`applyBind` → `confirmBind`）未完成，设备绑定只存在于内存中。
+**原因**：服务器端注册（`applyBind` → `confirmBind`）未完成，设备绑定只存在于内存中。
 
 ### 3. 设备名称显示错误
 
-**症状：** 绑定界面显示"Xiaomi Watch S2 46mm"而非预期的"小米手表 5"。
+**症状**：绑定界面显示"Xiaomi Watch S2 46mm"而非预期的"小米手表 5"。
 
-**原因：** BLE 扫描结果中的产品信息匹配可能不正确。
+**原因**：BLE 扫描结果中的产品信息匹配可能不正确。
 
 ## 调试方法
 
@@ -215,9 +199,9 @@ adb logcat | grep -i "pixelwatchspoof\|SppAuthHook\|BondHook\|ScanHook"
 | `>>> getBindInfo intercepted` | WearBinderV2.i() 被拦截 |
 | `Found mCallback: DualCoreDeviceBinder` | 成功找到回调对象 |
 | `Calling onBindSuccess on binder` | 正在调用绑定成功 |
-| `notifyDeviceBind(pixel_watch_035t) called` | 设备已注册到本地管理器 |
-| `onBindSuccess delivered!` | 绑定成功回调已发送 |
-| `App force-stopped` / `App relaunched` | App 重启流程 |
+| `onBindSuccess intercepted` | 绑定成功被拦截处理 |
+| `callback.onBindSuccess($did) called` | UI 回调已触发 |
+| `Launched MainActivity` | 尝试关闭绑定页面 |
 
 ### 常用 adb 命令
 
